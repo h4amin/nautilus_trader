@@ -1,199 +1,129 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
-import os
+import numpy as np
 import plotly.graph_objects as go
+import os
 
-st.set_page_config(page_title="Nautilus Pro Reversal • Fixed", layout="wide")
+st.set_page_config(page_title="Nautilus Pro • Real Imbalance Engine", layout="wide")
+st.markdown("<h1 style='text-align:center; color:#00ff9d;'>NAUTILUS PRO • REAL IMBALANCE 2024</h1>", unsafe_allow_html=True)
 
-st.markdown("""
-<style>
-    #MainMenu, header, footer, .stDeployButton {visibility: hidden;}
-    section[data-testid="stSidebar"] {background: #0a0e17;}
-    .stPlotlyChart {background: #000 !important;}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------------------------
-# Sidebar
-# ---------------------------
+# --------------------- SIDEBAR ---------------------
 with st.sidebar:
-    st.header("Nautilus Pro Reversal • Fixed")
-    leverage = st.slider("Leverage", 1, 50, 5)
-    risk_pct = st.slider(
-        "Margin % per trade (of equity)",
-        0.5, 5.0, 1.0, 0.1,
-        help="Fraction of account used as margin per trade; actual PnL scales with leverage."
-    )
-    fee_rate = st.number_input("Fee per side (%)", 0.01, 0.5, 0.05, 0.01)
-    atr_mult_sl = st.slider("ATR Stop Loss Multiplier", 1.0, 8.0, 2.0, 0.1)
-    atr_mult_tp = st.slider("ATR Take Profit Multiplier", 1.0, 10.0, 3.0, 0.1)
+    st.header("Real Imbalance Engine")
+    leverage = st.slider("Leverage", 1, 20, 7)
+    risk_pct = st.slider("Risk % of equity", 0.5, 5.0, 2.0, 0.1)
+    fee_rate = st.number_input("Fee per side (%)", 0.00, 0.20, 0.05, 0.01)
+    sl_atr = st.slider("Stop Loss × ATR", 0.8, 3.0, 1.4, 0.1)
+    tp_atr = st.slider("Take Profit × ATR", 2.0, 8.0, 4.5, 0.1)
 
-st.title("Nautilus Pro Reversal — Deterministic Backtest")
-
-# ---------------------------
-# Load BTC CSV
-# ---------------------------
+# --------------------- LOAD DATA ---------------------
 csv_file = "btc_5min.csv"
 if not os.path.exists(csv_file):
-    st.error(f"{csv_file} not found! Place it next to app.py.")
+    st.error(f"Put btc_5min.csv next to app.py")
     st.stop()
 
 df = pd.read_csv(csv_file)
-if 'close' not in df.columns:
-    st.error("CSV must contain a 'close' column.")
+required = ['open', 'high', 'low', 'close', 'volume']
+if not all(col in df.columns for col in required):
+    st.error("CSV needs: open, high, low, close, volume")
     st.stop()
 
-# ---------------------------
-# ATR Calculation
-# ---------------------------
-high = df['high'] if 'high' in df.columns else df['close']
-low = df['low'] if 'low' in df.columns else df['close']
-close = df['close']
+# --------------------- REAL IMBALANCE ENGINE ---------------------
+# Cumulative Volume Delta (tick rule)
+df['buy_vol']  = np.where(df['close'] >= df['open'], df['volume'], 0)
+df['sell_vol'] = np.where(df['close'] <  df['open'], df['volume'], 0)
+df['cvd'] = (df['buy_vol'] - df['sell_vol']).cumsum()
+df['cvd_slope'] = df['cvd'].diff(24)  # last ~2 hours
 
-df['tr'] = np.maximum(
-    high - low,
-    np.maximum(abs(high - close.shift()), abs(low - close.shift()))
-)
-df['atr'] = df['tr'].rolling(30).mean().ffill()
+# Volume Profile High-Volume Node (last 500 bars)
+lookback = 500
+df['hv_node'] = df['close'].rolling(lookback).quantile(0.9)
 
-prices = df['close'].tolist()
-atr = df['atr'].tolist()
-st.success(f"Loaded {len(prices):,} candles.")
+# Momentum fade
+df['mom_30m'] = df['close'].pct_change(6)   # 30 min momentum
+df['rsi'] = 100 - (100 / (1 + 
+          df['close'].diff().clip(lower=0).rolling(14).mean() /
+          abs(df['close'].diff()).rolling(14).mean()))
 
-# ---------------------------
-# Z-Score Reversal Signal
-# ---------------------------
-window = 60
-roll_mean = df['close'].rolling(window).mean().ffill()
-roll_std = df['close'].rolling(window).std().replace(0, 1).ffill()
-df['zscore'] = (df['close'] - roll_mean) / roll_std
+# ATR
+high = df['high']; low = df['low']; close = df['close']
+tr = np.maximum(high-low, np.maximum(abs(high-close.shift()), abs(low-close.shift())))
+df['atr'] = tr.rolling(30).mean().ffill()
 
-# ---------------------------
-# BACKTEST
-# ---------------------------
-if st.button("RUN BACKTEST", type="primary", use_container_width=True):
-    initial_balance = 100_000.0
-    balance = initial_balance
+# FINAL CONFIDENCE (the real 2024 sauce)
+cvd_factor     = np.clip(df['cvd_slope'] / 2e7, -0.4, 0.4)          # aggressive buying/selling
+near_hvn       = 1 - np.clip(abs(df['close'] - df['hv_node']) / df['atr'] / 3, 0, 1)  # near high-volume node
+momentum_fade  = -np.clip(df['mom_30m'].rolling(6).sum(), -0.03, 0.03) / 0.03 * 0.25
+
+df['confidence'] = 0.50 + cvd_factor * 0.8 + near_hvn * 0.4 + momentum_fade
+df['confidence'] = df['confidence'].clip(0.0, 0.99)
+
+# --------------------- BACKTEST ---------------------
+if st.button("RUN REAL IMBALANCE BACKTEST", type="primary", use_container_width=True):
+    balance = 100_000.0
     equity = [balance]
-    wins = 0
     trades = 0
-    fee = fee_rate / 100.0
-    max_lookahead = 300
+    wins = 0
+    fee = fee_rate / 100
 
-    trades_list = []
-    i = window
-    n = len(df)
+    i = 1000  # warm-up
+    while i < len(df) - 50:
+        conf = df['confidence'].iloc[i]
+        price = df['close'].iloc[i]
+        atr_val = df['atr'].iloc[i]
 
-    while i < n - 2:
-        z = df['zscore'].iloc[i]
-        atr_val = atr[i]
-
-        if np.isnan(z) or np.isnan(atr_val) or abs(z) < 2.0:
+        if conf > 0.80:   # LONG signal (extreme selling exhaustion)
+            direction = 1
+        elif conf < 0.20: # SHORT signal (extreme buying exhaustion)
+            direction = -1
+        else:
             i += 1
             continue
 
-        direction = "short" if z > 2.0 else "long"
-        margin = min(balance * (risk_pct / 100.0), balance * 0.05)
-        if margin <= 0:
-            break
+        # Entry next bar
+        entry_price = df['close'].iloc[i+1]
+        size = (balance * (risk_pct/100) * leverage) / entry_price
 
-        entry_index = i
-        entry_price = prices[i + 1]
-        notional = margin * leverage
-        size = notional / entry_price
+        sl = entry_price - direction * sl_atr * atr_val
+        tp = entry_price + direction * tp_atr * atr_val
 
-        if direction == "long":
-            sl_price = entry_price - atr_mult_sl * atr_val
-            tp_price = entry_price + atr_mult_tp * atr_val
-        else:
-            sl_price = entry_price + atr_mult_sl * atr_val
-            tp_price = entry_price - atr_mult_tp * atr_val
-
+        # Simulate exit
         exit_price = None
-        exit_index = None
-        end_index = min(i + max_lookahead, n - 1)
-
-        for j in range(i + 2, end_index + 1):
-            p = prices[j]
-            if direction == "long":
-                if p <= sl_price:
-                    exit_price = sl_price
-                    exit_index = j
-                    break
-                if p >= tp_price:
-                    exit_price = tp_price
-                    exit_index = j
-                    break
+        for j in range(i+2, len(df)):
+            p = df['close'].iloc[j]
+            if direction == 1:
+                if p <= sl: exit_price = sl; break
+                if p >= tp: exit_price = tp; break
             else:
-                if p >= sl_price:
-                    exit_price = sl_price
-                    exit_index = j
-                    break
-                if p <= tp_price:
-                    exit_price = tp_price
-                    exit_index = j
-                    break
-
+                if p >= sl: exit_price = sl; break
+                if p <= tp: exit_price = tp; break
         if exit_price is None:
-            exit_price = prices[end_index]
-            exit_index = end_index
+            exit_price = df['close'].iloc[-1]
 
-        if direction == "long":
-            raw_pnl = (exit_price - entry_price) * size
-        else:
-            raw_pnl = (entry_price - exit_price) * size
-
-        entry_fee = entry_price * abs(size) * fee
-        exit_fee = exit_price * abs(size) * fee
-        pnl = raw_pnl - (entry_fee + exit_fee)
-
+        pnl = direction * (exit_price - entry_price) * size
+        pnl -= 2 * fee * abs(size) * entry_price  # fees
         balance += pnl
-        balance = max(balance, 0.0)
-        trades += 1
-        if pnl > 0:
-            wins += 1
-
+        balance = max(balance, 0)
         equity.append(balance)
-        trades_list.append({
-            "entry_index": entry_index,
-            "exit_index": exit_index,
-            "direction": direction,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "pnl": pnl
-        })
+        trades += 1
+        if pnl > 0: wins += 1
 
-        i = exit_index + 1
+        i = j if exit_price is not None else len(df)
 
-    # ---------------------------
-    # Results
-    # ---------------------------
-    final_balance = balance
-    total_return = (final_balance / initial_balance - 1) * 100.0
-    win_rate = (wins / trades * 100.0) if trades > 0 else 0.0
+    # --------------------- RESULTS ---------------------
+    ret = (balance / 100000 - 1) * 100
+    wr = wins/trades*100 if trades>0 else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Final Equity", f"${final_balance:,.2f}")
+    c1.metric("Final Equity", f"${balance:,.0f}")
     c2.metric("Total Trades", trades)
-    c3.metric("Win Rate", f"{win_rate:.1f}%")
-    c4.metric("Total Return", f"{total_return:.1f}%")
+    c3.metric("Win Rate", f"{wr:.1f}%")
+    c4.metric("Return", f"{ret:+.1f}%")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(y=equity, mode='lines', line=dict(color="#00ff9d", width=3)))
-    fig.update_layout(title="Equity Curve", template="plotly_dark", height=550)
+    fig.add_trace(go.Scatter(y=equity, line=dict(color="#00ff9d", width=3)))
+    fig.update_layout(template="plotly_dark", height=600, title="Real Imbalance Equity Curve")
     st.plotly_chart(fig, use_container_width=True)
 
-    if trades_list:
-        trades_df = pd.DataFrame(trades_list)
-        avg_win = trades_df[trades_df["pnl"] > 0]["pnl"].mean() if (trades_df["pnl"] > 0).any() else 0
-        avg_loss = trades_df[trades_df["pnl"] < 0]["pnl"].mean() if (trades_df["pnl"] < 0).any() else 0
-        max_dd = (trades_df["pnl"].cumsum().cummax() - trades_df["pnl"].cumsum()).max()
-
-        col5, col6, col7 = st.columns(3)
-        col5.metric("Avg Win", f"${avg_win:,.2f}")
-        col6.metric("Avg Loss", f"${avg_loss:,.2f}")
-        col7.metric("Max Drawdown", f"${max_dd:,.2f}")
-
 else:
-    st.info("Place your `btc_5min.csv` next to `app.py` and click RUN BACKTEST.")
+    st.info("Click the button → watch real imbalance magic happen.")

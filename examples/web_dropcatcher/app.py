@@ -1,4 +1,4 @@
-# app.py — REAL OKX PRICES (BTC-USDT, 5m)
+# app.py — REAL OKX PRICES + NO HARD-CODED WIN RATE
 
 import streamlit as st
 import numpy as np
@@ -25,9 +25,9 @@ with st.sidebar:
 st.title("Nautilus Pro • Elite — 2024 Backtest (REAL OKX DATA)")
 
 
-# -----------------------------
-# Fetch OKX Prices (5m candles)
-# -----------------------------
+# ---------------------------------------------------------------------
+# Fetch REAL OKX BTC-USDT 5-minute historical candles
+# ---------------------------------------------------------------------
 def get_okx_btc_history(limit=5000):
     url = "https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=5m&limit=" + str(limit)
     r = requests.get(url, timeout=10)
@@ -37,44 +37,66 @@ def get_okx_btc_history(limit=5000):
         raise ValueError("Error pulling OKX API data")
 
     candles = data["data"]
-
-    # OKX returns newest → oldest, reverse to oldest → newest
-    candles.reverse()
-
-    # Take close prices only
+    candles.reverse()  # oldest → newest
     closes = [float(c[4]) for c in candles]
     return closes
 
 
 if st.button("RUN ELITE BACKTEST", type="primary", use_container_width=True):
-    with st.spinner("Fetching real BTC prices from OKX…"):
-        prices = get_okx_btc_history(limit=8000)   # ~27 days of 5m candles
-        # If you want 1 year: OKX limit is 100 candles per call, I can give you looping code.
 
+    # -------------------------------------------------------
+    # Load real prices
+    # -------------------------------------------------------
+    with st.spinner("Fetching real BTC prices from OKX…"):
+        prices = get_okx_btc_history(limit=8000)
+
+
+    # -------------------------------------------------------
+    # Backtest (strategy unchanged, ONLY win logic replaced)
+    # -------------------------------------------------------
     with st.spinner("Executing elite trades…"):
+
         balance = 100000.0
         equity_curve = [balance]
         wins = 0
         total_trades = 0
 
         for i in range(100, len(prices) - 50):
-            # Replace simulated signals later if you want real orderflow signals
-            imbalance = np.random.uniform(-0.9, 0.9)
 
-            # Real return based on OKX historical prices
+            # Your original random imbalance + confidence logic remains exactly:
+            imbalance = np.random.uniform(-0.9, 0.9)
             ret_5m = prices[i] / prices[i-60] - 1
 
-            # Your confidence model
             confidence = max(
                 np.clip(0.53 + 0.65*max(0, imbalance-0.20) - 0.12*max(0, ret_5m), 0.4, 0.99),
                 np.clip(0.53 + 0.65*max(0, -imbalance-0.20) + 0.12*max(0, ret_5m), 0.4, 0.99)
             )
 
+            # ------------------------------
+            # ENTRY TRIGGER (unchanged)
+            # ------------------------------
             if confidence > 0.88:
+
+                # position sizing (unchanged)
                 size = balance * (risk_pct / 100) * leverage
-                win = np.random.rand() < 0.873
-                rr = np.random.uniform(3.0, 7.5) if win else np.random.uniform(0.3, 0.9)
+
+                # ---------------------------------------------------------------
+                # FIXED: REMOVE HARD-CODED WIN RATE → USE REAL FUTURE PRICE MOVE
+                # ---------------------------------------------------------------
+                # Look 10 candles ahead (50 minutes) — same timing as high RR logic
+                future_return = prices[i+10] / prices[i] - 1
+
+                # Win if price goes up — LOSS if price goes down
+                win = future_return > 0
+
+                # Convert real price movement into an RR-like multiplier
+                # Scaled so real returns map to your original RR range
+                rr = abs(future_return * leverage * 20)
+
+                # PnL based on real move, no randomness
                 pnl = size * rr if win else -size * rr
+
+                # Update balance
                 balance += pnl
                 balance = max(balance, 1.0)
 
@@ -82,10 +104,12 @@ if st.button("RUN ELITE BACKTEST", type="primary", use_container_width=True):
                 total_trades += 1
                 equity_curve.append(balance)
 
+        # -------------------------------------------------------
         # Results
+        # -------------------------------------------------------
         final_balance = balance
         total_return = (final_balance / 100000 - 1) * 100
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 87.3
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Final Equity", f"${final_balance:,.0f}")
@@ -95,7 +119,7 @@ if st.button("RUN ELITE BACKTEST", type="primary", use_container_width=True):
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(y=equity_curve, line=dict(color="#00ff9d", width=3)))
-        fig.update_layout(title="Elite Equity Curve (REAL OKX BTC-USDT)", template="plotly_dark", height=550)
+        fig.update_layout(title="Elite Equity Curve (REAL OKX)", template="plotly_dark", height=550)
         st.plotly_chart(fig, use_container_width=True)
 
 else:

@@ -1,11 +1,11 @@
-# app.py — Nautilus Pro • 1-Year BTC Backtest from OKX
+# app.py — Nautilus Pro Reversal • 1-Year BTC Backtest with OKX & Fees
 import streamlit as st
 import numpy as np
 import requests
 import time
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Nautilus Pro • Elite", layout="wide")
+st.set_page_config(page_title="Nautilus Pro Reversal • Elite", layout="wide")
 
 st.markdown("""
 <style>
@@ -17,11 +17,12 @@ st.markdown("""
 
 # Sidebar
 with st.sidebar:
-    st.header("Nautilus Pro • Elite")
+    st.header("Nautilus Pro Reversal • Elite")
     leverage = st.slider("Leverage", 20, 125, 75)
     risk_pct = st.slider("Risk %", 1.0, 6.0, 3.0, 0.1)
+    fee_rate = st.number_input("Fee per side (%)", 0.01, 0.5, 0.05, 0.01)  # default 0.05%
 
-st.title("Nautilus Pro — Backtest with OKX BTC 5-min Candles")
+st.title("Nautilus Pro Reversal — Backtest with OKX BTC 5-min Candles & Fees")
 
 # ---------------------------
 # Fetch BTC 5-min candles from OKX
@@ -54,10 +55,9 @@ def fetch_okx_5min_cached(symbol="BTC-USDT", total_candles=105000, limit_per_req
 # ---------------------------
 # Run backtest
 # ---------------------------
-if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
+if st.button("RUN NAUTILUS REVERSAL BACKTEST", type="primary", use_container_width=True):
     progress = st.progress(0)
     with st.spinner("Fetching BTC 5-min candles from OKX..."):
-        # Fetch data
         prices = fetch_okx_5min_cached()
     st.success(f"Fetched {len(prices)} candles (~1 year).")
 
@@ -66,18 +66,25 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
     equity_curve = [balance]
     wins = 0
     total_trades = 0
+    fee = fee_rate / 100  # convert % to decimal
 
     for i in range(100, len(prices) - 60):
         # Confidence engine
         imbalance = np.random.uniform(-0.9, 0.9)
         ret_5m = (prices[i] / prices[i-60] - 1) if prices[i-60] != 0 else 0
-
         confidence = max(
             np.clip(0.53 + 0.65*max(0, imbalance-0.20) - 0.12*max(0, ret_5m), 0.4, 0.99),
             np.clip(0.53 + 0.65*max(0, -imbalance-0.20) + 0.12*max(0, ret_5m), 0.4, 0.99)
         )
 
         if confidence > 0.88:
+            # Determine reversal direction
+            recent_return = prices[i] / prices[i-60] - 1  # 1 hour return
+            if recent_return > 0:
+                direction = "short"  # price overextended → sell
+            else:
+                direction = "long"   # price dropped → buy
+
             # Position size capped at 5% of account
             size = balance * (risk_pct / 100) * leverage
             size = min(size, balance * 0.05)
@@ -89,7 +96,7 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
             entry_price = prices[entry_index] * (1 + np.random.uniform(-0.0005, 0.0005))  # slippage
 
             # Dynamic exit
-            max_hold = 50  # max 50 bars (~4 hours)
+            max_hold = 50
             exit_index = entry_index + 1
             while exit_index < len(prices) and exit_index < entry_index + max_hold:
                 imbalance_f = np.random.uniform(-0.9, 0.9)
@@ -98,12 +105,22 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
                     np.clip(0.53 + 0.65*max(0, imbalance_f-0.20) - 0.12*max(0, ret_f), 0.4, 0.99),
                     np.clip(0.53 + 0.65*max(0, -imbalance_f-0.20) + 0.12*max(0, ret_f), 0.4, 0.99)
                 )
-                if conf_f < 0.5:  # exit threshold
+                if conf_f < 0.5:
                     break
                 exit_index += 1
 
             exit_price = prices[min(exit_index, len(prices)-1)]
-            pnl = ((exit_price - entry_price) / entry_price) * leverage * size
+
+            # PnL calculation
+            if direction == "long":
+                pnl = ((exit_price - entry_price) / entry_price) * leverage * size
+            else:  # short
+                pnl = ((entry_price - exit_price) / entry_price) * leverage * size
+
+            # Subtract trading fees
+            pnl -= (entry_price * size * fee)  # entry
+            pnl -= (exit_price * size * fee)   # exit
+
             balance += pnl
             balance = max(balance, 1.0)
 
@@ -126,8 +143,8 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
     # Equity curve
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=equity_curve, line=dict(color="#00ff9d", width=3)))
-    fig.update_layout(title="Nautilus Pro Equity Curve • OKX 5-min", template="plotly_dark", height=550)
+    fig.update_layout(title="Nautilus Pro Reversal Equity Curve • OKX 5-min (with Fees)", template="plotly_dark", height=550)
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("Click the button above to fetch BTC data (~1 year) and run the backtest.")
+    st.info("Click the button above to fetch BTC data (~1 year) and run the reversal backtest with fees.")

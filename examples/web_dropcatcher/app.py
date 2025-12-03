@@ -1,4 +1,4 @@
-# app.py — Nautilus Pro • Full-Year Real OKX Backtest with 5% max trade size
+# app.py — Nautilus Pro • Full-Year Real OKX Backtest (Safe, 5% max trade)
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
@@ -52,7 +52,7 @@ def get_okx_full_year_5m():
 
     # Reverse to oldest → newest
     all_candles.reverse()
-    closes = [float(c[4]) for c in all_candles]
+    closes = [float(c[4]) for c in all_candles if float(c[4]) > 0]  # filter zeros
     return closes
 
 # ---------------------------
@@ -72,7 +72,7 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
     for i in range(100, len(prices) - 50):
         # --- Confidence engine
         imbalance = np.random.uniform(-0.9, 0.9)
-        ret_5m = prices[i] / prices[i-60] - 1
+        ret_5m = (prices[i] / prices[i-60] - 1) if prices[i-60] != 0 else 0
 
         confidence = max(
             np.clip(0.53 + 0.65*max(0, imbalance-0.20) - 0.12*max(0, ret_5m), 0.4, 0.99),
@@ -85,15 +85,20 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
             size = min(size, balance * 0.05)
 
             # Win/loss determined by real future price (10 bars ahead)
-            future_return = prices[i+10] / prices[i] - 1
+            if prices[i] != 0:
+                future_return = (prices[i+10] / prices[i] - 1)
+            else:
+                future_return = 0
             win = future_return > 0
 
             # Convert real return to RR and clip to Nautilus ranges
             raw_rr = abs(future_return * leverage * 20)
             rr = np.clip(raw_rr, 3.0, 7.5) if win else np.clip(raw_rr, 0.3, 0.9)
 
-            # Update balance
+            # Update balance safely
             pnl = size * rr if win else -size * rr
+            if np.isnan(pnl) or np.isinf(pnl):
+                pnl = 0
             balance += pnl
             balance = max(balance, 1.0)
 

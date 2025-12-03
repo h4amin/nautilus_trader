@@ -72,3 +72,4 @@ with placeholder.container():
         st.dataframe(pd.DataFrame(st.session_state.trades[:10]), use_container_width=True)
 
 st.sidebar.success("Auto-refresh every 0.5s | Real BTC price | 100 % stable")
+st.rerun()

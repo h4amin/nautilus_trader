@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -19,15 +20,15 @@ st.markdown("""
 # ---------------------------
 with st.sidebar:
     st.header("Nautilus Pro Reversal • Fixed")
-    leverage = st.slider("Leverage", 1, 50, 10)
+    leverage = st.slider("Leverage", 1, 50, 5)
     risk_pct = st.slider(
         "Margin % per trade (of equity)",
-        0.5, 5.0, 2.0, 0.1,
+        0.5, 5.0, 1.0, 0.1,
         help="Fraction of account used as margin per trade; actual PnL scales with leverage."
     )
     fee_rate = st.number_input("Fee per side (%)", 0.01, 0.5, 0.05, 0.01)
-    atr_mult_sl = st.slider("ATR Stop Loss Multiplier", 1.0, 8.0, 3.0, 0.1)
-    atr_mult_tp = st.slider("ATR Take Profit Multiplier", 1.0, 10.0, 5.0, 0.1)
+    atr_mult_sl = st.slider("ATR Stop Loss Multiplier", 1.0, 8.0, 2.0, 0.1)
+    atr_mult_tp = st.slider("ATR Take Profit Multiplier", 1.0, 10.0, 3.0, 0.1)
 
 st.title("Nautilus Pro Reversal — Deterministic Backtest")
 
@@ -83,6 +84,8 @@ if st.button("RUN BACKTEST", type="primary", use_container_width=True):
     fee = fee_rate / 100.0
     max_lookahead = 300  # max bars to hold a trade
 
+    trades_list = []  # store per-trade details
+
     i = window
     n = len(df)
 
@@ -90,7 +93,7 @@ if st.button("RUN BACKTEST", type="primary", use_container_width=True):
         z = df['zscore'].iloc[i]
         atr_val = atr[i]
 
-        # Skip if no signal or invalid ATR
+        # Skip if no signal or invalid ATR/zscore
         if np.isnan(z) or np.isnan(atr_val):
             i += 1
             continue
@@ -110,6 +113,9 @@ if st.button("RUN BACKTEST", type="primary", use_container_width=True):
         if margin <= 0:
             # No more usable capital
             break
+
+        # Save entry index before we start moving i
+        entry_index = i
 
         # Use next candle's price as entry (no intra-bar lookahead)
         entry_price = prices[i + 1]
@@ -166,7 +172,6 @@ if st.button("RUN BACKTEST", type="primary", use_container_width=True):
             raw_pnl = (entry_price - exit_price) * size
 
         # --- FEES on levered notional ---
-        # Fees are proportional to notional traded
         entry_fee = entry_price * abs(size) * fee
         exit_fee = exit_price * abs(size) * fee
         fee_cost = entry_fee + exit_fee
@@ -182,6 +187,19 @@ if st.button("RUN BACKTEST", type="primary", use_container_width=True):
             wins += 1
 
         equity.append(balance)
+
+        trades_list.append({
+            "entry_index": entry_index,
+            "exit_index": exit_index,
+            "direction": direction,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "margin": margin,
+            "notional": notional,
+            "size": size,
+            "pnl": pnl,
+            "fee_cost": fee_cost,
+        })
 
         # Move to first bar after this trade exits (no overlapping trades)
         i = exit_index + 1
@@ -199,10 +217,41 @@ if st.button("RUN BACKTEST", type="primary", use_container_width=True):
     c3.metric("Win Rate", f"{win_rate:.1f}%")
     c4.metric("Total Return", f"{total_return:.1f}%")
 
+    # ---------------------------
+    # Equity Curve (per trade)
+    # ---------------------------
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=equity, mode='lines', name="Equity"))
     fig.update_layout(title="Equity Curve (by trade)", template="plotly_dark", height=550)
     st.plotly_chart(fig, use_container_width=True)
 
+    # ---------------------------
+    # Trade-Level Stats
+    # ---------------------------
+    trades_df = pd.DataFrame(trades_list)
+
+    if not trades_df.empty:
+        # Basic PnL stats
+        wins_df = trades_df[trades_df["pnl"] > 0]
+        losses_df = trades_df[trades_df["pnl"] < 0]
+
+        avg_win = wins_df["pnl"].mean() if not wins_df.empty else 0.0
+        avg_loss = losses_df["pnl"].mean() if not losses_df.empty else 0.0
+
+        trades_df["cum_pnl"] = trades_df["pnl"].cumsum()
+        trades_df["cum_max"] = trades_df["cum_pnl"].cummax()
+        trades_df["dd"] = trades_df["cum_max"] - trades_df["cum_pnl"]
+        max_dd = trades_df["dd"].max() if not trades_df["dd"].empty else 0.0
+
+        st.subheader("Trade Statistics")
+        c5, c6, c7 = st.columns(3)
+        c5.metric("Avg Win", f"${avg_win:,.2f}")
+        c6.metric("Avg Loss", f"${avg_loss:,.2f}")
+        c7.metric("Max Drawdown (P&L)", f"${max_dd:,.2f}")
+
+        with st.expander("Show trade log (first 100 trades)"):
+            st.dataframe(trades_df.head(100))
+
 else:
     st.info("Click RUN BACKTEST to simulate deterministic reversals.")
+```

@@ -1,7 +1,4 @@
-# Install Nautilus Trader directly from PyPI (auto-selects compatible wheel)
-nautilus-trader==1.221.0
-
-# Streamlit + essentials (lightweight, no extras needed for backtesting)
 streamlit==1.38.0
-pyarrow>=14.0.0
 pandas
+numpy
+plotly

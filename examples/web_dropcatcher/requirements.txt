@@ -1,8 +1,8 @@
 streamlit>=1.38.0
-pandas
-numpy
-plotly
+pandas>=2.1.0
+numpy>=1.26.0
+plotly>=5.20.0
 ccxt>=4.3.0
-nautilus-trader>=2.7.0
-python-dotenv
-requests
+nautilus_trader>=1.221.0  # Latest stable; supports Python 3.13
+python-dotenv>=1.0.0
+requests>=2.31.0

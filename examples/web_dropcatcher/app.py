@@ -5,14 +5,16 @@ from typing import Optional
 
 import pandas as pd
 import streamlit as st
+
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.config import BacktestEngineConfig, BacktestVenueConfig, BacktestRunConfig
 from nautilus_trader.config import LoggingConfig
-from nautilus_trader.model.enums import AccountType, OmsType, Currency
+from nautilus_trader.model.enums import AccountType, OmsType
+from nautilus_trader.model.currency import Currency        # ← FIXED
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 
-# Your original strategy (100% untouched)
+# Your original untouched strategy
 from examples.web_dropcatcher.strategy import DropCatcher
 
 # Fixed values (this is what killed the NaN)

@@ -1,4 +1,4 @@
-# app.py — Nautilus Pro • Full-Year Real OKX Backtest
+# app.py — Nautilus Pro • Full-Year Real OKX Backtest with 5% max trade size
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
@@ -80,9 +80,9 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
         )
 
         if confidence > 0.88:
-            # Position size (capped at balance)
+            # Position size capped at 5% of account
             size = balance * (risk_pct / 100) * leverage
-            size = min(size, balance)
+            size = min(size, balance * 0.05)
 
             # Win/loss determined by real future price (10 bars ahead)
             future_return = prices[i+10] / prices[i] - 1

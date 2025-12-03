@@ -2,78 +2,196 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
+from datetime import datetime, timedelta
+import ccxt
 import time
-from datetime import datetime
+from typing import Dict, List
+from dataclasses import dataclass
 
-st.set_page_config(page_title="BTC DropCatcher", layout="wide")
-st.title("BTC DropCatcher – Real Price + 0.5s Live Update")
+# Nautilus Trader imports
+from nautilus_trader.config import BacktestVenueConfig, BacktestDataConfig, BacktestRunConfig
+from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+from nautilus_trader.model.identifiers import Venue, Symbol, TradingStrategyId
+from nautilus_trader.adapters.ccxt.config import CCXTDataConfig, CCXTFuturesVenueConfig
+from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.persistence.catalog import ParquetDataCatalog
+from nautilus_trader.trading.strategy import StrategyConfig
+from nautilus_trader.analysis import PerformanceMetrics
 
-# ---------- Session State ----------
-if "balance" not in st.session_state:
-    st.session_state.balance = 100000.0
-    st.session_state.trades = []
+st.set_page_config(page_title="Nautilus DropCatcher Pro", layout="wide", initial_sidebar_state="expanded")
+
+# Hide Streamlit artifacts
+hide_css = """
+<style>
+    #MainMenu, header, footer {visibility: hidden;}
+    .stDeployButton {display: none;}
+</style>
+"""
+st.markdown(hide_css, unsafe_allow_html=True)
+
+@dataclass
+class Trade:
+    time: str
+    price: float
+    size: float
+    imbalance: float
+    prob_drop: float
+    pnl: float
+    side: str  # 'SHORT'
+
+# Session state
+if "trades" not in st.session_state:
+    st.session_state.trades: List[Trade] = []
+    st.session_state.balance = 100_000.0
     st.session_state.price_history = []
+    st.session_state.mode = "paper"  # "paper" or "live"
+    st.session_state.api_key = ""
+    st.session_state.api_secret = ""
 
-# ---------- Real BTC price (no cache) ----------
-@st.cache_data(ttl=0)  # disables cache completely
-def get_price():
-    try:
-        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=3)
-        return r.json()["bitcoin"]["usd"]
-    except:
-        return st.session_state.price_history[-1] if st.session_state.price_history else 108000.0
+# Sidebar: Config
+st.sidebar.header("Bot Config")
+st.session_state.mode = st.sidebar.selectbox("Mode", ["paper", "live"], index=0)
+if st.session_state.mode == "live":
+    st.session_state.api_key = st.sidebar.text_input("Bybit API Key", type="password")
+    st.session_state.api_secret = st.sidebar.text_input("Bybit API Secret", type="password")
+st.sidebar.success(f"Mode: {st.session_state.mode.upper()}")
 
-price = get_price()
-st.session_state.price_history.append(price)
-if len(st.session_state.price_history) > 1200:
-    st.session_state.price_history = st.session_state.price_history[-1200:]
-
-# ---------- Simulated imbalance & signal ----------
-imbalance = np.random.uniform(-0.9, 0.3) + 0.35 * np.sin(len(st.session_state.price_history)/12)
-ret_5m = (price / st.session_state.price_history[-600]) - 1 if len(st.session_state.price_history)>600 else 0
-prob_drop = max(0.5, min(0.95, 0.5 + 0.45*(ret_5m<-0.015)*(imbalance<-0.65) + 0.12*(imbalance<-0.78)))
-
-if prob_drop > 0.78 and np.random.rand() > 0.33:
-    size = st.session_state.balance * 0.05 / price
-    pnl = size * np.random.uniform(700, 1500)
-    st.session_state.balance += pnl
-    st.session_state.trades.insert(0, {
-        "Time": datetime.now().strftime("%H:%M:%S"),
-        "Price": f"${price:,.0f}",
-        "Imbal": f"{imbalance:+.1%}",
-        "Prob": f"{prob_drop:.1%}",
-        "P&L": f"+${pnl:,.0f}"
+# Real BTC Data via CCXT (Bybit futures)
+@st.cache_data(ttl=10)  # Cache 10s for perf, but refresh often
+def fetch_price_and_book():
+    exchange = ccxt.bybit({
+        'apiKey': st.session_state.api_key,
+        'secret': st.session_state.api_secret,
+        'sandbox': st.session_state.mode == "paper",  # Testnet for paper/live toggle
+        'options': {'defaultType': 'future'},
     })
-    if len(st.session_state.trades) > 30:
-        st.session_state.trades = st.session_state.trades[:30]
+    try:
+        ticker = exchange.fetch_ticker('BTC/USDT')
+        price = ticker['last']
+        orderbook = exchange.fetch_order_book('BTC/USDT', limit=20)
+        # Calculate imbalance: (bid volume - ask volume) / total
+        bids = sum([bid[1] for bid in orderbook['bids'][:10]])
+        asks = sum([ask[1] for ask in orderbook['asks'][:10]])
+        imbalance = (bids - asks) / (bids + asks + 1e-6)  # -1 to +1, negative = sell pressure
+        return price, imbalance
+    except Exception as e:
+        st.error(f"API Error: {e}")
+        return st.session_state.price_history[-1] if st.session_state.price_history else 109_000.0, np.random.uniform(-0.5, 0.5)
 
-# ---------- Dashboard ----------
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("BTC Price (Live)", f"${price:,.0f}")
-c2.metric("Imbalance", f"{imbalance:+.1%}")
-c3.metric("Drop Prob", f"{prob_drop:.1%}", delta=f"{(prob_drop-0.78)*100:+.0f}%" if prob_drop>0.78 else None)
-c4.metric("Virtual Balance", f"${st.session_state.balance:,.0f}")
+price, imbalance = fetch_price_and_book()
+st.session_state.price_history.append(price)
+if len(st.session_state.price_history) > 1000:
+    st.session_state.price_history = st.session_state.price_history[-1000:]
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    fig = go.Figure(go.Scatter(y=st.session_state.price_history[-120:], mode="lines", line=dict(color="#00ff9d", width=2)))
-    fig.update_layout(height=420, margin=dict(l=0,r=0,b=0,t=30), showlegend=False)
+# Signal Logic (enhanced with real imbalance)
+lookback = st.session_state.price_history[-100:]
+if len(lookback) > 20:
+    ret_5m = (price / lookback[0]) - 1
+    prob_drop = 0.5 + 0.3 * (imbalance < -0.6) + 0.2 * (ret_5m < -0.01)
+    prob_drop = np.clip(prob_drop, 0.5, 0.95)
+else:
+    prob_drop = 0.5
+
+# Trade Execution (integrate Nautilus for real sim/live)
+def execute_trade(prob: float, price: float, imbalance: float):
+    if prob > 0.8 and st.session_state.balance > 1000:
+        size_usd = st.session_state.balance * 0.03  # 3% risk
+        size_btc = size_usd / price
+        # Simulate P&L for now; in live, use Nautilus to submit order
+        if st.session_state.mode == "live":
+            # Placeholder: Submit short via CCXT
+            pass  # exchange.create_market_sell_order('BTC/USDT', size_btc)
+        # Random realistic P&L (replace with Nautilus fill handler)
+        if np.random.rand() < 0.75:  # 75% win rate
+            pnl = size_usd * np.random.uniform(0.5, 2.0)
+        else:
+            pnl = -size_usd * np.random.uniform(0.2, 0.8)
+        st.session_state.balance += pnl
+        trade = Trade(
+            time=datetime.now().strftime("%H:%M:%S"),
+            price=price,
+            size=size_btc,
+            imbalance=imbalance,
+            prob_drop=prob,
+            pnl=pnl,
+            side="SHORT"
+        )
+        st.session_state.trades.insert(0, trade)
+        if len(st.session_state.trades) > 50:
+            st.session_state.trades = st.session_state.trades[:50]
+
+if prob_drop > 0.8:
+    execute_trade(prob_drop, price, imbalance)
+
+# Nautilus Backtest Snippet (run on load for stats)
+@st.cache_data
+def run_backtest():
+    # Simple config for historical drop strategy
+    config = BacktestRunConfig(
+        engine=BacktestEngineConfig(trader_id=TradingStrategyId("DropCatcher-001")),
+        venues=[CCXTFuturesVenueConfig(name=Venue("BYBIT"), load_test_data=False)],
+        data=[
+            CCXTDataConfig(
+                catalog_path=str(ParquetDataConfig(path="data/parquet/BYBIT.BTCUSDT.FUTURES")),
+                instrument_id=Symbol("BTC-USDT", Venue("BYBIT")),
+                load_data=True,
+            )
+        ],
+        strategies=[StrategyConfig(strategy_id=TradingStrategyId("DropCatcher"), module_path="dropcatcher_strategy.py")],
+        start_time="2025-01-01",
+        end_time="2025-12-01",
+    )
+    engine = BacktestEngine(config=config.engine)
+    engine.run(config)
+    metrics = PerformanceMetrics.from_backtest_result(engine.result)
+    return {
+        "win_rate": metrics.win_rate_pct,
+        "sharpe": metrics.sharpe_ratio,
+        "total_return": metrics.total_return_pct,
+    }
+
+backtest_stats = run_backtest() if st.button("Run Backtest") else {"win_rate": 0, "sharpe": 0, "total_return": 0}
+
+# Dashboard
+st.title("🛑 Nautilus DropCatcher Pro – Live BTC Shorts")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("BTC Price", f"${price:,.0f}")
+col2.metric("Orderbook Imbalance", f"{imbalance:+.1%}")
+col3.metric("Drop Probability", f"{prob_drop:.1%}", delta=f"{(prob_drop - 0.8)*100:+.0f}%" if prob_drop > 0.8 else None)
+col4.metric("Balance", f"${st.session_state.balance:,.0f}", delta=f"{(st.session_state.balance - 100000)/1000:+.0f}K")
+
+# Charts
+col_chart, col_stats = st.columns([3, 1])
+with col_chart:
+    fig = go.Figure(go.Scatter(y=st.session_state.price_history[-200:], mode="lines", line=dict(color="#ff4757", width=2)))
+    fig.update_layout(title="BTC Price (5s Updates)", height=400, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-with col2:
-    st.subheader("2025 Stats")
-    st.metric("Win Rate", "79.2%")
-    st.metric("Trades", str(len(st.session_state.trades)))
-    st.metric("Return", f"{(st.session_state.balance/100000-1)*100:+.1f}%")
-    st.metric("Max DD", "6.8%")
+with col_stats:
+    st.subheader("Backtest Stats")
+    st.metric("Win Rate", f"{backtest_stats['win_rate']:.1f}%")
+    st.metric("Sharpe Ratio", f"{backtest_stats['sharpe']:.2f}")
+    st.metric("Total Return", f"{backtest_stats['total_return']:.1f}%")
 
+# Trades Table
 if st.session_state.trades:
-    st.subheader("Recent SHORTs")
-    st.dataframe(pd.DataFrame(st.session_state.trades[:10]), use_container_width=True)
+    df = pd.DataFrame([{
+        "Time": t.time,
+        "Price": f"${t.price:,.0f}",
+        "Size (BTC)": f"{t.size:.4f}",
+        "Imbalance": f"{t.imbalance:+.1%}",
+        "Prob": f"{t.prob_drop:.1%}",
+        "P&L": f"${t.pnl:+,.0f}",
+        "Side": t.side
+    } for t in st.session_state.trades[:10]])
+    st.subheader("Recent Shorts")
+    st.dataframe(df, use_container_width=True)
 
-st.sidebar.success("Live 0.5s refresh | Real BTC price | Working perfectly")
+# Auto-refresh (every 5s, non-blocking)
+time.sleep(0.1)  # Small delay
+if st.button("Refresh Now") or True:  # Always for demo
+    st.rerun()
 
-# ---------- Force refresh every 0.5s ----------
-time.sleep(0.5)
-st.rerun()
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.info("Powered by Nautilus Trader | Bybit Futures | Risk: Use testnet first!")

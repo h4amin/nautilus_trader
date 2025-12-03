@@ -1,4 +1,4 @@
-# app.py — Nautilus Pro • Full-Year Real OKX Backtest (Safe, 5% max trade)
+# app.py — Nautilus Pro • Full-Year Real OKX Backtest (Safe, 5% max trade, delay & slippage)
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
@@ -21,7 +21,7 @@ with st.sidebar:
     leverage = st.slider("Leverage", 20, 125, 75)
     risk_pct = st.slider("Risk %", 1.0, 6.0, 3.0, 0.1)
 
-st.title("Nautilus Pro • Elite — Full-Year OKX Backtest")
+st.title("Nautilus Pro • Elite — Full-Year OKX Backtest with Execution Delay & Slippage")
 
 # ---------------------------
 # Fetch full-year BTC-USDT 5-min data from OKX
@@ -50,7 +50,6 @@ def get_okx_full_year_5m():
         next_before = candles[-1][0]
         time.sleep(0.12)  # rate limit safety
 
-    # Reverse to oldest → newest
     all_candles.reverse()
     closes = [float(c[4]) for c in all_candles if float(c[4]) > 0]  # filter zeros
     return closes
@@ -60,7 +59,6 @@ def get_okx_full_year_5m():
 # ---------------------------
 if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
 
-    # Load prices
     prices = get_okx_full_year_5m()
     prices = prices[-105000:]  # last 1 year (~365 days)
 
@@ -84,20 +82,28 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
             size = balance * (risk_pct / 100) * leverage
             size = min(size, balance * 0.05)
 
-            # Win/loss determined by real future price (10 bars ahead)
-            if prices[i] != 0:
-                future_return = (prices[i+10] / prices[i] - 1)
-            else:
-                future_return = 0
+            # --- Execution delay: enter trade 1 bar later
+            entry_index = i + 1
+            if entry_index >= len(prices) - 10:
+                continue
+            entry_price = prices[entry_index]
+
+            # --- Slippage: random ±0.05%
+            slippage = np.random.uniform(-0.0005, 0.0005)
+            entry_price *= (1 + slippage)
+
+            # --- Determine win/loss using future price 10 bars after execution
+            future_return = (prices[entry_index+10] / entry_price - 1) if entry_price != 0 else 0
             win = future_return > 0
 
             # Convert real return to RR and clip to Nautilus ranges
             raw_rr = abs(future_return * leverage * 20)
             rr = np.clip(raw_rr, 3.0, 7.5) if win else np.clip(raw_rr, 0.3, 0.9)
 
-            # Update balance safely
+            # Update balance safely, limit extreme PnL per trade
             pnl = size * rr if win else -size * rr
-            if np.isnan(pnl) or np.isinf(pnl):
+            pnl = np.clip(pnl, -balance*10, balance*10)  # prevent inf
+            if np.isnan(pnl):
                 pnl = 0
             balance += pnl
             balance = max(balance, 1.0)

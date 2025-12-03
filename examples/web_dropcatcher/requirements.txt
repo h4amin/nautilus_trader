@@ -1,5 +1,8 @@
-streamlit>=1.38.0
+# OFFICIAL pre-compiled Nautilus wheels (install in ~45 seconds)
+https://github.com/nautechsystems/nautilus_trader/releases/download/v2.0.0rc7/nautilus_trader-2.0.0rc7-cp39-abi3-manylinux_2_28_x86_64.whl
+https://github.com/nautechsystems/nautilus_trader/releases/download/v2.0.0rc7/nautilus_trader_full-2.0.0rc7-cp39-abi3-manylinux_2_28_x86_64.whl
+
+# Streamlit + essentials
+streamlit==1.38.0
+pyarrow>=14.0.0
 pandas
-numpy
-plotly
-ccxt>=4.3.0

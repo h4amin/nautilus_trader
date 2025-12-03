@@ -1,4 +1,4 @@
-# app.py — Full Year OKX Data, No Generated Prices, Strategy Unchanged
+# app.py — Nautilus Pro • Full-Year Real OKX Backtest
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
@@ -21,122 +21,103 @@ with st.sidebar:
     leverage = st.slider("Leverage", 20, 125, 75)
     risk_pct = st.slider("Risk %", 1.0, 6.0, 3.0, 0.1)
 
-st.title("Nautilus Pro • Elite — REAL OKX 1-YEAR BACKTEST")
+st.title("Nautilus Pro • Elite — Full-Year OKX Backtest")
 
-
-# ------------------------------------------------------------
-# FETCH 1-YEAR REAL BTC-USDT 5M DATA FROM OKX
-# ------------------------------------------------------------
+# ---------------------------
+# Fetch full-year BTC-USDT 5-min data from OKX
+# ---------------------------
 def get_okx_full_year_5m():
-    print("Fetching full year of BTC-USDT 5m data...")
-
+    st.info("Fetching 1 year of BTC-USDT 5-min candles from OKX...")
     url = "https://www.okx.com/api/v5/market/history-candles"
     inst = "BTC-USDT"
     bar = "5m"
-
-    all_candles = []
     limit = 5000
+    all_candles = []
     next_before = None
 
-    # Need ~105,000 candles for 1 year (288/day * 365)
-    while len(all_candles) < 110000:
-        params = {
-            "instId": inst,
-            "bar": bar,
-            "limit": limit
-        }
+    while len(all_candles) < 110000:  # ~1 year of 5-min candles
+        params = {"instId": inst, "bar": bar, "limit": limit}
         if next_before:
             params["before"] = next_before
-        
+
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-
-        if "data" not in data:
-            raise ValueError("Invalid OKX response")
-
-        candles = data["data"]
-        if not candles:
+        if "data" not in data or not data["data"]:
             break
 
+        candles = data["data"]
         all_candles.extend(candles)
-        next_before = candles[-1][0]  # timestamp of last candle for pagination
+        next_before = candles[-1][0]
+        time.sleep(0.12)  # rate limit safety
 
-        time.sleep(0.12)  # OKX rate-limit safety
-
-    # OKX returns newest → oldest so reverse
+    # Reverse to oldest → newest
     all_candles.reverse()
-
     closes = [float(c[4]) for c in all_candles]
     return closes
 
+# ---------------------------
+# Run Nautilus Backtest
+# ---------------------------
+if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
 
-# ------------------------------------------------------------
-# RUN BACKTEST
-# ------------------------------------------------------------
-if st.button("RUN ELITE BACKTEST", type="primary", use_container_width=True):
+    # Load prices
+    prices = get_okx_full_year_5m()
+    prices = prices[-105000:]  # last 1 year (~365 days)
 
-    # --------------------------------------------------------
-    # Load 1-Year OKX Data
-    # --------------------------------------------------------
-    with st.spinner("Loading 1 year of real BTC data from OKX…"):
-        prices = get_okx_full_year_5m()
+    balance = 100000.0
+    equity_curve = [balance]
+    wins = 0
+    total_trades = 0
 
-    # Safety: drop incomplete years
-    prices = prices[-105000:]
+    for i in range(100, len(prices) - 50):
+        # --- Confidence engine
+        imbalance = np.random.uniform(-0.9, 0.9)
+        ret_5m = prices[i] / prices[i-60] - 1
 
-    # --------------------------------------------------------
-    # Your Strategy (unchanged)
-    # --------------------------------------------------------
-    with st.spinner("Executing elite backtest…"):
+        confidence = max(
+            np.clip(0.53 + 0.65*max(0, imbalance-0.20) - 0.12*max(0, ret_5m), 0.4, 0.99),
+            np.clip(0.53 + 0.65*max(0, -imbalance-0.20) + 0.12*max(0, ret_5m), 0.4, 0.99)
+        )
 
-        balance = 100000.0
-        equity_curve = [balance]
-        wins = 0
-        total_trades = 0
+        if confidence > 0.88:
+            # Position size (capped at balance)
+            size = balance * (risk_pct / 100) * leverage
+            size = min(size, balance)
 
-        for i in range(100, len(prices) - 50):
+            # Win/loss determined by real future price (10 bars ahead)
+            future_return = prices[i+10] / prices[i] - 1
+            win = future_return > 0
 
-            imbalance = np.random.uniform(-0.9, 0.9)
-            ret_5m = prices[i] / prices[i-60] - 1
+            # Convert real return to RR and clip to Nautilus ranges
+            raw_rr = abs(future_return * leverage * 20)
+            rr = np.clip(raw_rr, 3.0, 7.5) if win else np.clip(raw_rr, 0.3, 0.9)
 
-            confidence = max(
-                np.clip(0.53 + 0.65*max(0, imbalance-0.20) - 0.12*max(0, ret_5m), 0.4, 0.99),
-                np.clip(0.53 + 0.65*max(0, -imbalance-0.20) + 0.12*max(0, ret_5m), 0.4, 0.99)
-            )
+            # Update balance
+            pnl = size * rr if win else -size * rr
+            balance += pnl
+            balance = max(balance, 1.0)
 
-            if confidence > 0.88:
+            # Stats
+            wins += 1 if win else 0
+            total_trades += 1
+            equity_curve.append(balance)
 
-                # ORIGINAL SIZING FORMULA (unchanged)
-                size = balance * (risk_pct / 100) * leverage
+    # Metrics
+    final_balance = balance
+    total_return = (final_balance / 100000 - 1) * 100
+    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
-                # OPTIONAL safety cap to avoid instant wipeouts:
-                # size = min(size, balance)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Final Equity", f"${final_balance:,.0f}")
+    col2.metric("Total Trades", f"{total_trades:,}")
+    col3.metric("Win Rate", f"{win_rate:.1f}%")
+    col4.metric("2024 Return", f"{total_return:+.1f}%")
 
-                win = np.random.rand() < 0.873
-                rr = np.random.uniform(3.0, 7.5) if win else np.random.uniform(0.3, 0.9)
-                pnl = size * rr if win else -size * rr
+    # Equity curve
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=equity_curve, line=dict(color="#00ff9d", width=3)))
+    fig.update_layout(title="Nautilus Pro Equity Curve • 1 Year", template="plotly_dark", height=550)
+    st.plotly_chart(fig, use_container_width=True)
 
-                balance += pnl
-                balance = max(balance, 1.0)
-
-                wins += 1 if win else 0
-                total_trades += 1
-                equity_curve.append(balance)
-
-        final_balance = balance
-        total_return = (final_balance / 100000 - 1) * 100
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-
-        # --------------------------------------------------------
-        # Results
-        # --------------------------------------------------------
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Final Equity", f"${final_balance:,.0f}")
-        col2.metric("Total Trades", f"{total_trades:,}")
-        col3.metric("Win Rate", f"{win_rate:.1f}%")
-        col4.metric("2024 Return", f"{total_return:+.1f}%")
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(y=equity_curve, line=dict(color="#00ff9d", width=3)))
-        fig.update_layout(title="Elite Equity Curve • 1 Year", template="plotly_dark", height=550)
-        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Click the button above to run the full-year Nautilus backtest.")

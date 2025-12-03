@@ -1,4 +1,4 @@
-# app.py — Nautilus Pro Reversal • Local CSV Backtest with Fees
+# app.py — Nautilus Pro Reversal • Local CSV Backtest (Corrected)
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -22,7 +22,7 @@ with st.sidebar:
     st.header("Nautilus Pro Reversal • Elite")
     leverage = st.slider("Leverage", 20, 125, 75)
     risk_pct = st.slider("Risk %", 1.0, 6.0, 3.0, 0.1)
-    fee_rate = st.number_input("Fee per side (%)", 0.01, 0.5, 0.05, 0.01)  # default 0.05%
+    fee_rate = st.number_input("Fee per side (%)", 0.01, 0.5, 0.05, 0.01)
 
 st.title("Nautilus Pro Reversal — Backtest with Local BTC CSV & Fees")
 
@@ -49,6 +49,7 @@ if st.button("RUN NAUTILUS REVERSAL BACKTEST", type="primary", use_container_wid
     fee = fee_rate / 100
 
     for i in range(100, len(prices) - 60):
+        # Nautilus confidence logic
         imbalance = np.random.uniform(-0.9, 0.9)
         ret_5m = (prices[i] / prices[i-60] - 1) if prices[i-60] != 0 else 0
         confidence = max(
@@ -59,17 +60,22 @@ if st.button("RUN NAUTILUS REVERSAL BACKTEST", type="primary", use_container_wid
         if confidence > 0.88:
             recent_return = prices[i] / prices[i-60] - 1
             direction = "short" if recent_return > 0 else "long"
-            size = balance * (risk_pct / 100) * leverage
-            size = min(size, balance * 0.05)  # max 5% account per trade
+
+            # Trade size: % of account (max 5%)
+            size = balance * (risk_pct / 100)
+            size = min(size, balance * 0.05)
+
+            # Entry
             entry_index = i + 1
             if entry_index >= len(prices) - 10:
                 continue
-            # Add slippage
             entry_price = prices[entry_index] * (1 + np.random.uniform(-0.0005, 0.0005))
+
+            # Exit logic
             max_hold = 50
             exit_index = entry_index + 1
             while exit_index < len(prices) and exit_index < entry_index + max_hold:
-                # Reversal exit condition: confidence drops
+                # Reversal exit condition
                 imbalance_f = np.random.uniform(-0.9, 0.9)
                 ret_f = (prices[exit_index] / prices[exit_index-60] - 1) if prices[exit_index-60] != 0 else 0
                 conf_f = max(
@@ -81,11 +87,13 @@ if st.button("RUN NAUTILUS REVERSAL BACKTEST", type="primary", use_container_wid
                 exit_index += 1
 
             exit_price = prices[min(exit_index, len(prices)-1)]
+
+            # PnL calculation with leverage and fees
             if direction == "long":
-                pnl = ((exit_price - entry_price) / entry_price) * leverage * size
+                pnl = ((exit_price - entry_price) / entry_price) * size * leverage
             else:
-                pnl = ((entry_price - exit_price) / entry_price) * leverage * size
-            # Subtract fees
+                pnl = ((entry_price - exit_price) / entry_price) * size * leverage
+
             pnl -= (entry_price * size * fee) + (exit_price * size * fee)
             balance += pnl
             balance = max(balance, 1.0)
@@ -93,6 +101,7 @@ if st.button("RUN NAUTILUS REVERSAL BACKTEST", type="primary", use_container_wid
             total_trades += 1
             equity_curve.append(balance)
 
+    # Metrics
     final_balance = balance
     total_return = (final_balance / 100_000 - 1) * 100
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
@@ -103,6 +112,7 @@ if st.button("RUN NAUTILUS REVERSAL BACKTEST", type="primary", use_container_wid
     col3.metric("Win Rate", f"{win_rate:.1f}%")
     col4.metric("2024 Return", f"{total_return:+.1f}%")
 
+    # Equity curve plot
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=equity_curve, line=dict(color="#00ff9d", width=3)))
     fig.update_layout(title="Nautilus Pro Reversal Equity Curve • BTC 5-min (with Fees)", template="plotly_dark", height=550)

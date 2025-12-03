@@ -1,4 +1,4 @@
-# app.py — Nautilus Pro • Full-Year Real OKX Backtest (No Clamping)
+# app.py — Nautilus Pro • Realistic PnL with Delay & Slippage
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
@@ -21,7 +21,7 @@ with st.sidebar:
     leverage = st.slider("Leverage", 20, 125, 75)
     risk_pct = st.slider("Risk %", 1.0, 6.0, 3.0, 0.1)
 
-st.title("Nautilus Pro • Elite — Full-Year OKX Backtest (Realistic)")
+st.title("Nautilus Pro — Full-Year Backtest with Realistic PnL, Delay & Slippage")
 
 # ---------------------------
 # Fetch BTC 5-min prices from OKX
@@ -87,30 +87,25 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
             future_index = entry_index + 10
             if future_index >= len(prices):
                 continue  # skip if not enough future data
+
             entry_price = prices[entry_index]
+            exit_price = prices[future_index]
 
             # Skip zero prices
-            if entry_price <= 0 or prices[future_index] <= 0:
+            if entry_price <= 0 or exit_price <= 0:
                 continue
 
             # Slippage ±0.05%
             slippage = np.random.uniform(-0.0005, 0.0005)
             entry_price *= (1 + slippage)
 
-            # Determine win/loss
-            future_return = (prices[future_index] / entry_price - 1)
-            win = future_return > 0
-
-            # Nautilus R/R logic
-            raw_rr = abs(future_return * leverage * 20)
-            rr = np.clip(raw_rr, 3.0, 7.5) if win else np.clip(raw_rr, 0.3, 0.9)
-
-            # Update balance naturally (no clamping)
-            pnl = size * rr if win else -size * rr
+            # Realistic PnL calculation
+            pnl = ((exit_price - entry_price) / entry_price) * leverage * size
             balance += pnl
             balance = max(balance, 1.0)
 
-            wins += 1 if win else 0
+            # Win/loss stats
+            wins += 1 if pnl > 0 else 0
             total_trades += 1
             equity_curve.append(balance)
 

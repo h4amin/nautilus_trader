@@ -1,4 +1,4 @@
-# app.py — Nautilus Pro • Realistic PnL with Delay & Slippage
+# app.py — Nautilus Pro • Realistic PnL with Dynamic Exits
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
@@ -21,7 +21,7 @@ with st.sidebar:
     leverage = st.slider("Leverage", 20, 125, 75)
     risk_pct = st.slider("Risk %", 1.0, 6.0, 3.0, 0.1)
 
-st.title("Nautilus Pro — Full-Year Backtest with Realistic PnL, Delay & Slippage")
+st.title("Nautilus Pro — Full-Year Backtest with Dynamic Exits")
 
 # ---------------------------
 # Fetch BTC 5-min prices from OKX
@@ -67,7 +67,7 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
     wins = 0
     total_trades = 0
 
-    for i in range(100, len(prices) - 50):
+    for i in range(100, len(prices) - 60):
         # Confidence engine
         imbalance = np.random.uniform(-0.9, 0.9)
         ret_5m = (prices[i] / prices[i-60] - 1) if prices[i-60] != 0 else 0
@@ -84,20 +84,40 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
 
             # Execution delay: 1 bar
             entry_index = i + 1
-            future_index = entry_index + 10
-            if future_index >= len(prices):
-                continue  # skip if not enough future data
-
+            if entry_index >= len(prices) - 10:
+                continue
             entry_price = prices[entry_index]
-            exit_price = prices[future_index]
 
             # Skip zero prices
-            if entry_price <= 0 or exit_price <= 0:
+            if entry_price <= 0:
                 continue
 
             # Slippage ±0.05%
             slippage = np.random.uniform(-0.0005, 0.0005)
             entry_price *= (1 + slippage)
+
+            # --- Dynamic Exit ---
+            max_hold = 50  # max 50 bars (~4 hours)
+            exit_index = entry_index + 1
+            while exit_index < len(prices) and exit_index < entry_index + max_hold:
+                # Recalculate confidence at each future bar
+                imbalance_f = np.random.uniform(-0.9, 0.9)
+                ret_f = (prices[exit_index] / prices[exit_index-60] - 1) if prices[exit_index-60] != 0 else 0
+                conf_f = max(
+                    np.clip(0.53 + 0.65*max(0, imbalance_f-0.20) - 0.12*max(0, ret_f), 0.4, 0.99),
+                    np.clip(0.53 + 0.65*max(0, -imbalance_f-0.20) + 0.12*max(0, ret_f), 0.4, 0.99)
+                )
+                if conf_f < 0.5:  # exit threshold
+                    break
+                exit_index += 1
+
+            # Ensure exit index is valid
+            if exit_index >= len(prices):
+                exit_index = len(prices) - 1
+            exit_price = prices[exit_index]
+
+            if exit_price <= 0:
+                continue
 
             # Realistic PnL calculation
             pnl = ((exit_price - entry_price) / entry_price) * leverage * size
@@ -123,8 +143,8 @@ if st.button("RUN NAUTILUS BACKTEST", type="primary", use_container_width=True):
     # Equity curve
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=equity_curve, line=dict(color="#00ff9d", width=3)))
-    fig.update_layout(title="Nautilus Pro Equity Curve • 1 Year", template="plotly_dark", height=550)
+    fig.update_layout(title="Nautilus Pro Equity Curve • 1 Year (Dynamic Exits)", template="plotly_dark", height=550)
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("Click the button above to run the full-year Nautilus backtest.")
+    st.info("Click the button above to run the full-year Nautilus backtest with dynamic exits.")
